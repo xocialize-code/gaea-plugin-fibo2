@@ -1,7 +1,8 @@
 # gaea-plugin-fibo2
 
-Bria's **Fibo 2.0 Dev** (an 8.1B DiT on Qwen3-VL-4B that reads structured JSON captions; CC BY-NC 4.0 weights) as a
-[Gaea](https://github.com/xocialize-code/gaea) **research plugin**. It is built on
+Bria's **Fibo 2.0** (an 8.1B DiT on Qwen3-VL-4B that reads structured JSON captions; CC BY-NC 4.0 weights) as a
+[Gaea](https://github.com/xocialize-code/gaea) **research plugin**: Fibo 2.0 Dev, the full base model, and Fibo 2.0
+Edit Turbo, its 4-step editor. It is built on
 [GaeaPluginKit](https://github.com/xocialize-code/gaea-plugin-kit) over
 [fibo2-swift](https://github.com/xocialize/fibo2-swift), runs in its own process, and speaks the Gaea Plugin Protocol
 v1. Add it to Gaea by its repo URL:
@@ -12,8 +13,8 @@ gaea plugins add https://github.com/xocialize-code/gaea-plugin-fibo2
 
 ## A research plugin: named-only and opt-in
 
-The weights are non-commercial, so Gaea makes the model **opt-in and named-only**: nothing runs it by default, and a
-request reaches it only by naming it (`"model": "fibo-2-dev"`). The offers carry the licence, `commercial_use: false`
+The weights are non-commercial, so Gaea makes the models **opt-in and named-only**: nothing runs them by default, and
+a request reaches one only by naming it (`"model": "fibo-2-edit-turbo"`). The offers carry the licence, `commercial_use: false`
 and a notice, so a user sees the terms before using it. This is a plugin, not a shipping clearance.
 
 ## What it offers
@@ -22,6 +23,7 @@ and a notice, so a user sees the terms before using it. This is a plugin, not a 
 |---|---|---|
 | `fibo-2-dev` | `image.generate` | Text-to-image at about one megapixel. 50 steps with guidance 5. Negative prompts honoured. |
 | `fibo-2-dev` | `image.edit` | Instruction editing of 1–5 images, named in order as `<image_1>`, `<image_2>`. One output. |
+| `fibo-2-edit-turbo` | `image.edit` | The same edits in 4 steps without guidance: about a twentieth of the DiT work. Editing only. |
 
 - **Prompts.** Fibo 2.0 was trained on structured JSON captions ([VGL](https://docs.bria.ai/vgl)): `short_description`,
   `objects`, `background_setting`, `lighting`, `aesthetics`, `photographic_characteristics`, `style_medium`, and
@@ -35,10 +37,11 @@ and a notice, so a user sees the terms before using it. This is a plugin, not a 
   trained for the first image's aspect ratio, so that image is cropped to the ratio, not stretched.
 - **`count`** on `image.generate`: 1–4 images, each with `seed + i`. A request without a seed gets one, reported in
   `effective`. `image.edit` has one output; `strength` does nothing (`param_ignored`).
-- **Negative prompt.** Without one, text-to-image uses the model card's negative and an edit the model's null caption.
+- **Negative prompt.** Dev: without one, text-to-image uses the model card's negative and an edit the model's null
+  caption. Edit Turbo runs without guidance, so a negative prompt is reported `negative_prompt_ignored`.
 - **Options**, as MES extensions:
-  - `x-fibo2.steps` (1–100, default 50; 30 is faster and close);
-  - `x-fibo2.guidance` (1–10, default 5; 1 turns guidance off and halves the time);
+  - `x-fibo2.steps`: Dev 1–100, default 50 (30 is faster and close); Edit Turbo 1–16, default 4;
+  - `x-fibo2.guidance` (Dev only; 1–10, default 5; 1 turns guidance off and halves the time);
   - `x-fibo2.text_images` (default true): draw each `text_render` text and show it to the text encoder, as the
     model's training did.
 - **Not offered:** masked edits as an input (MES `image.edit` has no mask; the package takes one, see fibo2-swift),
@@ -46,7 +49,7 @@ and a notice, so a user sees the terms before using it. This is a plugin, not a 
 
 ## Speed
 
-This is the full base model: two DiT passes a step. On an M5 Max, bf16, with nothing else on the GPU:
+Dev is the full base model: two DiT passes a step. On an M5 Max, bf16, with nothing else on the GPU:
 
 | Request | Per step | 50 steps | 30 steps |
 |---|---|---|---|
@@ -55,12 +58,13 @@ This is the full base model: two DiT passes a step. On an M5 Max, bf16, with not
 | Edit, 2 images | 12.8 s | about 11 min | about 6.5 min |
 | Edit, 5 images | 38.8 s | about 32 min | about 19 min |
 
-Bria's few-step Fibo 2.0 Edit Turbo has the same architecture and would cut edits to a fraction of this. It is gated
-separately and is not in this plugin.
+**Edit Turbo** makes 4 passes where Dev makes 100. A one-image edit at 1024² took 21.5 s end to end over the plugin
+protocol on the int8 lane (loading the text encoder, encoding, 4 steps, decoding), against about 6 minutes for Dev.
 
 ## Lanes and memory
 
-Each lane is a DiT quant, made at load from the bf16 snapshot. The DiT and VAE stay resident; the text encoder loads
+Each lane is a DiT quant, made at load from the bf16 snapshot. Both models have the same three lanes and the same
+memory. The DiT and VAE stay resident; the text encoder loads
 for each request and is released before denoising.
 
 | Lane | Resident | Peak while running | Gaea schedules |
@@ -79,13 +83,17 @@ default lane doesn't fit, Gaea loads a smaller one and warns (`lane_fallback`). 
 ## Weights
 
 Gaea sends its models root in `configure` (MLXEngine's store by default; `gaea models root` changes it). The worker
-reads one snapshot there and downloads it on `prepare` or `materialize` when it is missing:
+reads these there and downloads what is missing on `prepare` or `materialize`:
 
-- `briaai/Fibo-2.0-dev`, pinned to commit `b01e5a34a0a9540c65f585c2c281535deabac16d` (about 32 GB: the transformer,
+- `briaai/Fibo-2.0-dev`, pinned to commit `b01e5a34a0a9540c65f585c2c281535deabac16d` (about 25 GB: the transformer,
   the text encoder, the VAE, the tokenizer and two fonts).
+- `briaai/Fibo-2.0-edit-turbo`, pinned to commit `7b133d62d92e897f1468af0427a73cc41a03cb5d`. Its text encoder, VAE,
+  tokenizer and fonts are Dev's, byte for byte, so with Dev installed Edit Turbo fetches only its 16 GB transformer.
+  Without Dev it fetches all 25 GB from its own repo.
 
-The repo is **gated**. Request access on the [model page](https://huggingface.co/briaai/Fibo-2.0-dev) with your own
-Hugging Face account, for non-commercial use. The engine then reads `HF_TOKEN`, the Keychain, or the CLI's token file.
+Both repos are **gated**, each with its own form. Request access on the model pages
+([Dev](https://huggingface.co/briaai/Fibo-2.0-dev), [Edit Turbo](https://huggingface.co/briaai/Fibo-2.0-edit-turbo))
+with your own Hugging Face account, for non-commercial use. The engine then reads `HF_TOKEN`, the Keychain, or the CLI's token file.
 This plugin doesn't mirror or redistribute any weights.
 
 ## Build and check locally

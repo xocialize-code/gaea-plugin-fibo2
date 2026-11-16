@@ -1,5 +1,5 @@
 {
-  "originHash" : "5a4b53154477a1a4327a5166e990d4caf2a75d939440a1afb56ddc9ad6a5f695",
+  "originHash" : "7d41bee7d97a8d3fba938a9e6ff6f11db68b0fd9b837d005679c2f3b36c1d724",
   "pins" : [
     {
       "identity" : "designscaffold",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/xocialize/fibo2-swift.git",
       "state" : {
-        "revision" : "ab85e0fba5149088e4f6f8266b4e150e448d5079",
-        "version" : "0.1.1"
+        "revision" : "d996c6fe338cee5e6096b70bd1461744769ddff8",
+        "version" : "0.2.0"
       }
     },
     {

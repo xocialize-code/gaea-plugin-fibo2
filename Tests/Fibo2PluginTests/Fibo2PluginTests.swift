@@ -73,24 +73,46 @@ import Testing
         #expect(Fibo2Envelope.violation(width: trained.width, height: trained.height, imageCount: 1) == nil)
     }
 
-    @Test func theManifestOffersOneNamedOnlyNonCommercialModel() throws {
+    @Test func editTurboHasNoGuidanceAndItsOwnSteps() throws {
+        let turbo = try Shared(job("image.edit", ["negative_prompt": "blurry"], model: ["x-fibo2.guidance": 7]),
+                               model: .editTurbo, counted: false)
+        #expect(turbo.steps == 4 && turbo.guidance == 1 && turbo.negative == nil)
+        #expect(turbo.warnings.map(\.code) == ["negative_prompt_ignored"])
+        #expect(turbo.effective(width: 1024, height: 1024, model: .editTurbo, counted: false)["x-fibo2.guidance"] == nil)
+        #expect(throws: GPPError.self) { try Shared(job("image.edit", model: ["x-fibo2.steps": 17]), model: .editTurbo) }
+        #expect(try Shared(job("image.edit", model: ["x-fibo2.steps": 8]), model: .editTurbo).steps == 8)
+        #expect(configuration(.editTurbo, quant: .int8).variant == .editTurbo)
+        #expect(configuration(.editTurbo, quant: .int8).defaultSteps == 4)
+        #expect(params(.editTurbo)["properties"]?["x-fibo2.guidance"] == nil)
+        #expect(params(.dev)["properties"]?["x-fibo2.guidance"] != nil)
+    }
+
+    @Test func theManifestOffersTwoNamedOnlyNonCommercialModels() throws {
         let manifest = try fibo2Plugin.manifest()
-        #expect(manifest.version == "0.1.0" && manifest.minGaea == "1.9.0")
-        #expect(manifest.models.map(\.id) == ["fibo-2-dev"])
-        #expect(manifest.models[0].lanes.map(\.id) == ["bf16", "int8", "int4"] && manifest.models[0].lanes[0].default)
-        // Bria's own gated repo, pinned to a commit; nothing is mirrored.
+        #expect(manifest.version == "0.2.0" && manifest.minGaea == "1.9.0")
+        #expect(manifest.models.map(\.id) == ["fibo-2-dev", "fibo-2-edit-turbo"])
+        for model in manifest.models {
+            #expect(model.lanes.map(\.id) == ["bf16", "int8", "int4"] && model.lanes[0].default)
+        }
+        // Bria's own gated repos, pinned to commits; nothing is mirrored.
         for lane in manifest.models[0].lanes {
             #expect(lane.resolved.weightSources.map(\.repo) == ["briaai/Fibo-2.0-dev"])
             #expect(lane.resolved.weightSources[0].revision?.count == 40)
         }
-        #expect(manifest.offers.map(\.operation) == ["image.generate", "image.edit"])
+        for lane in manifest.models[1].lanes {
+            #expect(lane.resolved.weightSources.map(\.role) == ["transformer", "shared"])
+            #expect(lane.resolved.weightSources.allSatisfy { $0.repo == "briaai/Fibo-2.0-edit-turbo" && $0.revision?.count == 40 })
+        }
+        #expect(manifest.offers.map(\.operation) == ["image.generate", "image.edit", "image.edit"])
+        #expect(manifest.offers.map { $0.modelID } == ["fibo-2-dev", "fibo-2-dev", "fibo-2-edit-turbo"])
         for offer in manifest.offers {
             let model = offer.model
             #expect(model["license"]?["spdx"] == "CC-BY-NC-4.0" && model["license"]?["commercial_use"] == false)
             #expect(model["license"]?["accepted_required"] == true && model["named_only"] == true)
             #expect(model["license"]?["notice"]?.stringValue?.contains("non-commercial") == true)
         }
-        #expect(manifest.offers[1].limits?.maxImages == 5)
+        #expect(manifest.offers[1].limits?.maxImages == 5 && manifest.offers[2].limits?.maxImages == 5)
+        #expect(manifest.offers[2].model["speed_class"] == "standard")
         #expect(manifest.engine?.contract == MLXEngineRelease.contract)
     }
 }

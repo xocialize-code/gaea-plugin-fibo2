@@ -4,14 +4,14 @@ import MLXFibo2
 import MLXServeCore
 import MLXToolKit
 
-// The in-process reference for the plugin: one Fibo 2.0 Dev lane loaded by MLXServeEngine in this process, with the
+// The in-process reference for the plugin: one lane of a Fibo 2.0 model loaded by MLXServeEngine in this process, with the
 // lane configuration the worker uses (Fibo2Plugin) and the request it would build (Fibo2Request, after the same size
 // fitting). The first image is written to --out, and one JSON line of timings is printed. Not part of the plugin
 // bundle.
 //
-//   fibo2-inproc [--lane bf16 | int8 | int4] [--prompt <text | @file>] [--negative <text | @file>] [--width 1024]
-//                [--height 1024] [--steps 50] [--guidance 5] [--seed 42] [--no-text-images] [--image <png> ...]
-//                [--models-root <dir>] [--out <png>] [--runs 1]
+//   fibo2-inproc [--model fibo-2-dev | fibo-2-edit-turbo] [--lane bf16 | int8 | int4] [--prompt <text | @file>]
+//                [--negative <text | @file>] [--width 1024] [--height 1024] [--steps <the model's>] [--guidance 5]
+//                [--seed 42] [--no-text-images] [--image <png> ...] [--models-root <dir>] [--out <png>] [--runs 1]
 //
 // --image (repeatable, 1–5) makes it an image.edit with the prompt as the instruction; without --width and --height
 // the package draws at the size trained for the first image's aspect ratio, as in the worker.
@@ -47,12 +47,14 @@ func text(_ value: String) -> String {
 }
 
 let started = ContinuousClock.now
+let modelName = option("--model") ?? Model.dev.id
+guard let model = Model.allCases.first(where: { $0.id == modelName }) else { fail("unknown --model \(modelName)") }
 let quant = Quant(rawValue: option("--lane") ?? defaultQuant.rawValue) ?? defaultQuant
 let prompt = text(option("--prompt") ?? "A photorealistic lighthouse on a rocky coast at dusk, warm light in the lantern room")
 let negative = option("--negative").map(text)
 let width = Int(option("--width") ?? ""), height = Int(option("--height") ?? "")
-let steps = Int(option("--steps") ?? "") ?? defaultSteps
-let guidance = Double(option("--guidance") ?? "") ?? defaultGuidance
+let steps = Int(option("--steps") ?? "") ?? model.defaultSteps
+let guidance = model.guided ? Double(option("--guidance") ?? "") ?? model.defaultGuidance : model.defaultGuidance
 let seed = UInt64(option("--seed") ?? "") ?? 42
 let textImages = !flag("--no-text-images")
 let imagePaths = options("--image")
@@ -62,6 +64,7 @@ let modelsRoot = URL(fileURLWithPath: option("--models-root")
                      ?? NSHomeDirectory() + "/Library/Application Support/MLXEngine/Models", isDirectory: true)
 let isEdit = !imagePaths.isEmpty
 guard imagePaths.count <= maxImages else { fail("--image takes 1–\(maxImages) images") }
+guard isEdit || model.generates else { fail("\(model.title) edits only: give it --image") }
 
 // The worker's size: the asked one fitted to the envelope; else 1024² (generate) or the package's choice (edit).
 var size: (Int?, Int?) = (nil, nil)
@@ -74,14 +77,15 @@ if let width, let height {
 let request = Fibo2Request(prompt: prompt, negative: negative, width: size.0, height: size.1, steps: steps,
                            guidance: guidance, seed: seed, textImages: textImages)
 
-var result: [String: Any] = ["model": modelID, "lane": quant.rawValue, "steps": steps, "guidance": guidance, "seed": seed,
+var result: [String: Any] = ["model": model.id, "lane": quant.rawValue, "steps": steps, "guidance": guidance, "seed": seed,
                              "images": imagePaths.count]
 
 // The budget Gaea sends a worker on a large Mac (wiresWeights off, the automatic pool cap).
 let engine = MLXServeEngine(workerBudget: WorkerBudget(ceilingBytes: 64_000_000_000, wiresWeights: false))
 await engine.useModelStore(ModelStore(root: modelsRoot))
-let id = PackageID(modelID)
-_ = try await engine.register(Fibo2DevPackage.registration, configuration: configuration(quant: quant), id: id)
+let id = PackageID(model.id)
+_ = try await engine.register(model == .dev ? Fibo2DevPackage.registration : Fibo2EditTurboPackage.registration,
+                              configuration: configuration(model, quant: quant), id: id)
 
 var clock = ContinuousClock.now
 _ = try await engine.prepare(isEdit ? .imageEdit : .textToImage, package: id)

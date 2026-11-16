@@ -9,32 +9,49 @@ import MLXToolKit
 // gaea-plugin-fibo2: Bria's Fibo 2.0 Dev (CC BY-NC 4.0 weights, MIT port) as a Gaea research plugin, on fibo2-swift
 // through MLXServeEngine (AB-T-0493).
 //
-// One model, fibo-2-dev: text-to-image and instruction editing of 1–5 images in one 8.1B DiT on Qwen3-VL-4B. It is the
-// full base model: 50 steps with classifier-free guidance 5, two DiT passes a step. It reads structured JSON captions
-// (Bria's VGL); a short description works too.
+// Two models on one 8.1B DiT architecture with Qwen3-VL-4B:
+//   - fibo-2-dev: text-to-image and instruction editing of 1–5 images. The full base model: 50 steps with
+//     classifier-free guidance 5, two DiT passes a step.
+//   - fibo-2-edit-turbo (0.2.0): instruction editing only, distilled from Dev to 4 steps without guidance.
+// Both read structured JSON captions (Bria's VGL); a short description or a plain instruction works too.
 //
-// The weights are non-commercial, so Gaea makes the model named-only and opt-in by itself; the offers say named-only
-// too (AB-D-0226: a plugin may carry such a model, with its terms shown). Three lanes, one per DiT quant, all made at
-// load from Bria's own gated snapshot; bf16 is the default. Weights come from the models root Gaea sends in configure;
-// the engine materializes a missing snapshot from briaai/Fibo-2.0-dev with a Hugging Face token whose account has
-// access. Nothing is mirrored.
+// The weights are non-commercial, so Gaea makes the models named-only and opt-in by itself; the offers say named-only
+// too (AB-D-0226: a plugin may carry such a model, with its terms shown). Three lanes each, one per DiT quant, all made
+// at load from Bria's own gated snapshots; bf16 is the default. Weights come from the models root Gaea sends in
+// configure; the engine materializes a missing snapshot from Bria's repo with a Hugging Face token whose account has
+// access. Nothing is mirrored. The two repos share their text encoder, VAE and fonts byte for byte, so Edit Turbo
+// fetches only its transformer when Dev is installed.
 
 /// The package's envelope (`Fibo2Envelope`): about one megapixel, the area the model was trained at.
 public let maxPixels = Fibo2Envelope.maxOutputPixels, minPixels = Fibo2Envelope.minOutputPixels
 public let minSide = Fibo2Envelope.minSide, grid = 16, maxImages = Fibo2Envelope.maxImages
 
-public let modelID = "fibo-2-dev", modelTitle = "Fibo 2.0 Dev"
+/// The plugin's models: the package's two checkpoints.
+public typealias Model = Fibo2Variant
+
+extension Fibo2Variant {
+    /// The MES model id, which is the package's name.
+    public var id: String { packageName }
+    /// image.generate is Dev's alone: Edit Turbo is distilled for editing.
+    public var generates: Bool { self == .dev }
+    /// Dev runs with guidance; Edit Turbo has none, so it takes no guidance and no negative prompt.
+    public var guided: Bool { self == .dev }
+    /// `x-fibo2.steps`: Dev 1–100 (the card's 50), Edit Turbo 1–16 (distilled for 4).
+    public var stepRange: ClosedRange<Int> { self == .dev ? 1...100 : 1...16 }
+}
+
+public let modelID = Model.dev.id, modelTitle = Model.dev.title
 /// The model card's settings for the full base model.
-public let defaultSteps = 50
-public let defaultGuidance = 5.0
+public let defaultSteps = Model.dev.defaultSteps
+public let defaultGuidance = Model.dev.defaultGuidance
 
 /// The lanes, default first: bf16, int8, and int4 (FFN up-projections at 4 bits, the rest of each block at 8).
 public let quants: [Quant] = [.bf16, .int8, .int4]
 public let defaultQuant = Quant.bf16
 
-/// The package configuration for one lane. fibo2-inproc builds the same one.
-public func configuration(quant: Quant) -> Fibo2Configuration {
-    Fibo2Configuration(quant: quant, snapshotPath: "", defaultSteps: defaultSteps, defaultGuidance: defaultGuidance)
+/// The package configuration for one lane of a model. fibo2-inproc builds the same one.
+public func configuration(_ model: Model = .dev, quant: Quant) -> Fibo2Configuration {
+    Fibo2Configuration(variant: model, quant: quant)
 }
 
 /// The MES size a job asks for (`size`, or `aspect` with `megapixels`, Image profile §2); nil when it asks for none.
@@ -145,10 +162,13 @@ struct Shared {
     var warnings: [Warning] = []
 
     /// `counted`: image.generate takes MES `count`; image.edit has one output and no count.
-    init(_ job: Job, counted: Bool = true) throws {
-        steps = job.param("x-fibo2.steps")?.intValue ?? defaultSteps
-        guard (1...100).contains(steps) else { throw GPPError(.invalidRequest, "x-fibo2.steps is 1–100.") }
-        guidance = job.param("x-fibo2.guidance")?.doubleValue ?? defaultGuidance
+    init(_ job: Job, model: Model = .dev, counted: Bool = true) throws {
+        steps = job.param("x-fibo2.steps")?.intValue ?? model.defaultSteps
+        guard model.stepRange.contains(steps) else {
+            throw GPPError(.invalidRequest, "x-fibo2.steps is \(model.stepRange.lowerBound)–\(model.stepRange.upperBound) for \(model.title).")
+        }
+        // Edit Turbo's offer has no guidance param; Gaea passes a worker only the ones its offer names.
+        guidance = model.guided ? job.param("x-fibo2.guidance")?.doubleValue ?? model.defaultGuidance : model.defaultGuidance
         guard (1...10).contains(guidance) else { throw GPPError(.invalidRequest, "x-fibo2.guidance is 1–10 (1 turns guidance off).") }
         if let value = job.param("x-fibo2.text_images") {
             guard case .bool(let b) = value else { throw GPPError(.invalidRequest, "x-fibo2.text_images is true or false.") }
@@ -161,7 +181,9 @@ struct Shared {
                 negative = text
             } else {
                 warnings.append(Warning(code: "negative_prompt_ignored",
-                                        message: "With x-fibo2.guidance 1 there is no guidance pass, so a negative prompt does nothing.",
+                                        message: model.guided
+                                            ? "With x-fibo2.guidance 1 there is no guidance pass, so a negative prompt does nothing."
+                                            : "\(model.title) runs without guidance, so a negative prompt does nothing.",
                                         param: "negative_prompt"))
             }
         }
@@ -179,12 +201,12 @@ struct Shared {
                      seed: seed, textImages: textImages)
     }
 
-    func effective(width: Int, height: Int, counted: Bool = true) -> [String: JSONValue] {
+    func effective(width: Int, height: Int, model: Model = .dev, counted: Bool = true) -> [String: JSONValue] {
         var values: [String: JSONValue] = [
             "size": ["width": .int(Int64(width)), "height": .int(Int64(height))],
-            "seed": .int(Int64(seed)), "x-fibo2.steps": .int(Int64(steps)), "x-fibo2.guidance": .double(guidance),
-            "x-fibo2.text_images": .bool(textImages),
+            "seed": .int(Int64(seed)), "x-fibo2.steps": .int(Int64(steps)), "x-fibo2.text_images": .bool(textImages),
         ]
+        if model.guided { values["x-fibo2.guidance"] = .double(guidance) }
         if counted { values["count"] = .int(Int64(count)) }
         return values
     }
@@ -210,7 +232,7 @@ func generate() -> EngineOperation {
 /// MES image.edit: an instruction edit of 1–5 images, named in the instruction in order (<image_1>, <image_2>). One
 /// output, drawn from noise. Without a size it is the size Fibo 2.0 was trained at for the first image's aspect ratio
 /// (about one megapixel), so the first image is cropped to that ratio, not stretched.
-func edit() -> EngineOperation {
+func edit(_ model: Model = .dev) -> EngineOperation {
     EngineOperation("image.edit", outputNames: ["image": "image"]) { job in
         guard let instruction = try job.text("instruction") ?? job.text("prompt"), !instruction.isEmpty else {
             throw GPPError(.invalidRequest, "image.edit needs an instruction.")
@@ -222,9 +244,9 @@ func edit() -> EngineOperation {
                            detail: ["param": "images"])
         }
         if let problem = Fibo2Prompt.editPromptProblem(instruction) {
-            throw GPPError(.invalidRequest, "Fibo 2.0 Dev: \(problem).", detail: ["param": "instruction"])
+            throw GPPError(.invalidRequest, "\(model.title): \(problem).", detail: ["param": "instruction"])
         }
-        var shared = try Shared(job, counted: false)
+        var shared = try Shared(job, model: model, counted: false)
         var width: Int?, height: Int?
         let made: (Int, Int)
         if let asked = try requestedSize(job) {
@@ -251,14 +273,15 @@ func edit() -> EngineOperation {
         }
         let images = try references.indices.map { try job.image(name, index: $0) }
         let request = shared.request(prompt: instruction, width: width, height: height)
-        return [EngineCall(request.edit(images), effective: shared.effective(width: made.0, height: made.1, counted: false),
+        return [EngineCall(request.edit(images),
+                           effective: shared.effective(width: made.0, height: made.1, model: model, counted: false),
                            warnings: shared.warnings)]
     }
 }
 
-public func lanes() -> [LaneDefinition] {
+public func lanes(_ model: Model = .dev) -> [LaneDefinition] {
     quants.map { quant in
-        LaneDefinition(id: quant.rawValue, default: quant == defaultQuant, configuration: configuration(quant: quant))
+        LaneDefinition(id: quant.rawValue, default: quant == defaultQuant, configuration: configuration(model, quant: quant))
     }
 }
 
@@ -267,71 +290,95 @@ public func lanes() -> [LaneDefinition] {
 let fiboLicence: JSONValue = [
     "spdx": "CC-BY-NC-4.0", "commercial_use": false, "accepted_required": true,
     "terms_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
-    "notice": .string("Fibo 2.0 Dev weights © Bria AI, CC BY-NC 4.0: non-commercial use only, with attribution. Commercial "
+    "notice": .string("Fibo 2.0 weights © Bria AI, CC BY-NC 4.0: non-commercial use only, with attribution. Commercial "
         + "use needs a licence from Bria (platform.bria.ai/licensing/pricing?model=fibo-2). The weights are gated: the "
-        + "Hugging Face account behind your token needs access to briaai/Fibo-2.0-dev."),
+        + "Hugging Face account behind your token needs access to the model's repo (briaai/Fibo-2.0-dev, "
+        + "briaai/Fibo-2.0-edit-turbo)."),
 ]
 let limits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid)
 let editLimits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid, maxImages: maxImages)
 
-let params: JSONValue = [
-    "type": "object", "additionalProperties": false,
-    "properties": [
-        "x-fibo2.steps": ["type": "integer", "minimum": 1, "maximum": 100, "default": .int(Int64(defaultSteps)),
-                          "description": "Denoising steps, two DiT passes each. The model card uses 50; 30 is faster and close.",
-                          "x-mes-ui": ["widget": "slider", "label": "Steps", "advanced": true]],
-        "x-fibo2.guidance": ["type": "number", "minimum": 1, "maximum": 10, "default": .double(defaultGuidance),
-                             "description": "Classifier-free guidance. 1 turns it off: one pass a step, half the time, weaker results.",
-                             "x-mes-ui": ["widget": "slider", "label": "Guidance", "advanced": true]],
+/// The MES extensions a model's offers name. Edit Turbo has no guidance.
+func params(_ model: Model) -> JSONValue {
+    var properties: [String: JSONValue] = [
+        "x-fibo2.steps": [
+            "type": "integer", "minimum": .int(Int64(model.stepRange.lowerBound)), "maximum": .int(Int64(model.stepRange.upperBound)),
+            "default": .int(Int64(model.defaultSteps)),
+            "description": .string(model == .dev
+                ? "Denoising steps, two DiT passes each. The model card uses 50; 30 is faster and close."
+                : "Denoising steps, one DiT pass each. The model is distilled for 4."),
+            "x-mes-ui": ["widget": "slider", "label": "Steps", "advanced": true]],
         "x-fibo2.text_images": [
             "type": "boolean", "default": true,
             "description": .string("Draw each text the caption's text_render asks for and show it to the text encoder, as "
                 + "the model's training did. It helps the model spell the text."),
             "x-mes-ui": ["widget": "toggle", "label": "Text images", "advanced": true],
         ],
-    ],
-]
+    ]
+    if model.guided {
+        properties["x-fibo2.guidance"] = [
+            "type": "number", "minimum": 1, "maximum": 10, "default": .double(model.defaultGuidance),
+            "description": "Classifier-free guidance. 1 turns it off: one pass a step, half the time, weaker results.",
+            "x-mes-ui": ["widget": "slider", "label": "Guidance", "advanced": true]]
+    }
+    return ["type": "object", "additionalProperties": false, "properties": .object(properties)]
+}
 
 let captionNote = "The model reads structured JSON captions (Bria's VGL, docs.bria.ai/vgl): short_description, objects, "
     + "background_setting, lighting, aesthetics, photographic_characteristics, style_medium, and text_render "
     + "[{text, location, …}] for text to draw. A short plain description works too, with less control. "
 
-func offerModel(edit: Bool) -> JSONValue {
-    let use = edit
-        ? "Instruction editing of 1–5 images, named in order as <image_1>, <image_2>. The instruction goes as typed, or as "
-            + "JSON with edit_instruction and the result's caption under structured_caption. Drawn from noise at the "
-            + "size trained for the first image's aspect ratio (about one megapixel, cropped to that ratio); strength "
-            + "does nothing. About 6 minutes with one image at 50 steps on an M5 Max, 11 with two, 32 with five. "
-        : "Text-to-image at about one megapixel (1024×1024, 1424×800, 1248×832): 50 steps with guidance 5, about "
-            + "3 minutes on an M5 Max. A negative prompt is honoured; without one the model card's is used. " + captionNote
+let editNote = "Instruction editing of 1–5 images, named in order as <image_1>, <image_2>. The instruction goes as typed, or "
+    + "as JSON with edit_instruction and the result's caption under structured_caption. Drawn from noise at the size "
+    + "trained for the first image's aspect ratio (about one megapixel, cropped to that ratio); strength does nothing. "
+
+func offerModel(_ model: Model, edit: Bool) -> JSONValue {
+    let use: String
+    switch (model, edit) {
+    case (.dev, true):
+        use = "The full base model: two passes a step. " + editNote
+            + "About 6 minutes with one image at 50 steps on an M5 Max, 11 with two, 32 with five; Fibo 2.0 Edit Turbo "
+            + "does the same edit in 4 steps. "
+    case (.dev, false):
+        use = "The full base model: two passes a step. Text-to-image at about one megapixel (1024×1024, 1424×800, "
+            + "1248×832): 50 steps with guidance 5, about 3 minutes on an M5 Max. A negative prompt is honoured; "
+            + "without one the model card's is used. " + captionNote
+    case (.editTurbo, _):
+        use = "Distilled from Fibo 2.0 Dev for editing: 4 steps without guidance, one pass a step, so a negative prompt "
+            + "does nothing. " + editNote
+    }
     return [
-        "id": .string(modelID), "title": .string(modelTitle), "license": fiboLicence,
-        "memory_class": "large", "speed_class": "slow",
-        "quality_tiers": ["best"], "named_only": true,
-        "notes": .string("Research plugin, named-only and opt-in (CC BY-NC 4.0: non-commercial). The full base model: two "
-            + "passes a step. " + use),
+        "id": .string(model.id), "title": .string(model.title), "license": fiboLicence,
+        "memory_class": "large", "speed_class": model == .dev ? "slow" : "standard",
+        "quality_tiers": model == .dev ? ["best"] : ["draft", "standard"], "named_only": true,
+        "notes": .string("Research plugin, named-only and opt-in (CC BY-NC 4.0: non-commercial). " + use),
     ]
 }
 
 public let fibo2Plugin = GaeaPluginDefinition(
     id: "com.xocialize.gaea.fibo2",
-    version: "0.1.0",
+    version: "0.2.0",
     minGaea: "1.9.0",
     team: "CFZS6RXUCP",
     repo: "https://github.com/xocialize-code/gaea-plugin-fibo2",
-    title: "Fibo 2.0 Dev",
-    summary: "Bria's Fibo 2.0 Dev (CC BY-NC 4.0: non-commercial; gated weights): an 8.1B DiT on Qwen3-VL-4B that reads "
-        + "structured JSON captions. Text-to-image and instruction editing of up to 5 images, with strong prompt "
-        + "adherence and text rendering. The full 50-step base model, so it is slow. A research plugin: named-only and "
-        + "opt-in.",
+    title: "Fibo 2.0",
+    summary: "Bria's Fibo 2.0 (CC BY-NC 4.0: non-commercial; gated weights): an 8.1B DiT on Qwen3-VL-4B that reads "
+        + "structured JSON captions. Fibo 2.0 Dev, the full 50-step base model, for text-to-image and instruction "
+        + "editing of up to 5 images; Fibo 2.0 Edit Turbo for the same edits in 4 steps. Strong prompt adherence and "
+        + "text rendering. A research plugin: named-only and opt-in.",
     license: "Apache-2.0",
     executable: "gaea-fibo2-worker",
     models: [
-        .engine(Fibo2DevPackage.self, id: modelID, title: modelTitle, lanes: lanes(), operations: [generate(), edit()]),
+        .engine(Fibo2DevPackage.self, id: Model.dev.id, title: Model.dev.title, lanes: lanes(.dev),
+                operations: [generate(), edit(.dev)]),
+        .engine(Fibo2EditTurboPackage.self, id: Model.editTurbo.id, title: Model.editTurbo.title, lanes: lanes(.editTurbo),
+                operations: [edit(.editTurbo)]),
     ],
     offers: [
-        PluginManifest.Offer(operation: "image.generate", profile: "image", model: offerModel(edit: false), params: params,
-                             defaults: ["count": 1], limits: limits),
-        PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(edit: true), params: params,
-                             limits: editLimits),
+        PluginManifest.Offer(operation: "image.generate", profile: "image", model: offerModel(.dev, edit: false),
+                             params: params(.dev), defaults: ["count": 1], limits: limits),
+        PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(.dev, edit: true),
+                             params: params(.dev), limits: editLimits),
+        PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(.editTurbo, edit: true),
+                             params: params(.editTurbo), limits: editLimits),
     ])
