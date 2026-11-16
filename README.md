@@ -44,8 +44,12 @@ and a notice, so a user sees the terms before using it. This is a plugin, not a 
   - `x-fibo2.guidance` (Dev only; 1–10, default 5; 1 turns guidance off and halves the time);
   - `x-fibo2.text_images` (default true): draw each `text_render` text and show it to the text encoder, as the
     model's training did.
-- **Not offered:** masked edits as an input (MES `image.edit` has no mask; the package takes one, see fibo2-swift),
-  LoRA adapters, and the model card's style presets.
+- **Not on fill or extend** (0.2.1). Gaea runs those with an edit model by marking the region and compositing the
+  result back at the picture's size. Fibo 2.0's edit redraws the picture at a trained size and crops the first image
+  to that aspect ratio, so its result wouldn't line up, and both `image.edit` offers say so
+  (`supports.image_to_image`). `image.edit` itself is unaffected.
+- **Not offered:** masked edits as an input (MES `image.edit` has no mask; the package takes one, see fibo2-swift,
+  and Gaea is adding a route for it), LoRA adapters, and the model card's style presets.
 
 ## Speed
 
@@ -91,9 +95,34 @@ reads these there and downloads what is missing on `prepare` or `materialize`:
   tokenizer and fonts are Dev's, byte for byte, so with Dev installed Edit Turbo fetches only its 16 GB transformer.
   Without Dev it fetches all 25 GB from its own repo.
 
-Both repos are **gated**, each with its own form. Request access on the model pages
-([Dev](https://huggingface.co/briaai/Fibo-2.0-dev), [Edit Turbo](https://huggingface.co/briaai/Fibo-2.0-edit-turbo))
-with your own Hugging Face account, for non-commercial use. The engine then reads `HF_TOKEN`, the Keychain, or the CLI's token file.
+Both repos are **gated**, each with its own form, and Gaea never stores a Hugging Face token. So fetch the weights
+yourself before the first job; a download started by a job fails without access.
+
+1. Request access on the model pages ([Dev](https://huggingface.co/briaai/Fibo-2.0-dev),
+   [Edit Turbo](https://huggingface.co/briaai/Fibo-2.0-edit-turbo)) with your own Hugging Face account, for
+   non-commercial use.
+2. Log in and download into Gaea's models root (Settings → General shows it; MLXEngine's store by default):
+
+```bash
+hf auth login
+```
+
+```bash
+hf download briaai/Fibo-2.0-dev --revision b01e5a34a0a9540c65f585c2c281535deabac16d --exclude "assets/*" --cache-dir "<models root>"
+```
+
+```bash
+hf download briaai/Fibo-2.0-edit-turbo --revision 7b133d62d92e897f1468af0427a73cc41a03cb5d --include "transformer/*" --include "model_index.json" --cache-dir "<models root>"
+```
+
+3. Load them once, so the next job starts at once:
+
+```bash
+gaea plugins warm com.xocialize.gaea.fibo2 fibo-2-edit-turbo
+```
+
+The Edit Turbo line fetches only its transformer; that is enough when Dev is under the same root. Without Dev, drop its
+`--include` options to fetch the whole repo. The engine then reads `HF_TOKEN`, the Keychain, or the CLI's token file.
 This plugin doesn't mirror or redistribute any weights.
 
 ## Build and check locally
@@ -120,8 +149,10 @@ the same lane in-process through MLXServeEngine, with the request the worker wou
   [terms](https://creativecommons.org/licenses/by-nc/4.0/legalcode)). Non-commercial use only, with attribution.
   Commercial use needs a licence from Bria: <https://platform.bria.ai/licensing/pricing?model=fibo-2>. Bria states the
   model was trained only on licensed data.
-- **In Gaea.** The offers say `commercial_use: false` and `accepted_required: true` and carry a notice with these
-  terms. What a user does with the outputs is theirs to decide.
+- **In Gaea.** The offers say `commercial_use: false` and carry a notice with these terms. The operator accepts
+  them to enable a model (`accepted_required`), and each client's user is shown the notice and accepts it too
+  (`user_accept_required`), because the licence binds every user. Gaea carries the attribution "Made with Fibo 2.0
+  by Bria AI (CC BY-NC 4.0)" to clients. What a user does with the outputs is theirs to decide.
 - **The plugin code** is Apache-2.0 (Gaea G-21), and fibo2-swift is MIT. The text encoder (Qwen3-VL-4B) is
   Apache-2.0. fibo2-swift embeds Pillow's built-in font, a subset of Aileron (CC0), to draw text images the way the
   model's training did.

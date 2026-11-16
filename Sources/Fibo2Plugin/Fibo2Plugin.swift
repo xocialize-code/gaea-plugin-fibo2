@@ -287,9 +287,14 @@ public func lanes(_ model: Model = .dev) -> [LaneDefinition] {
 
 /// CC BY-NC 4.0 (the model card's `bria-fibo` licence): non-commercial. The notice names the terms and the gate, as
 /// pixel-agency-normalizer's `ImageNormalizer.notice` does for the other restricted models.
+/// The licence binds each user (non-commercial use, with attribution), so a client's user is shown the notice and
+/// accepts it too (`user_accept_required`, as AuK's Qwen Research terms: G-27, AB-D-0209), and Gaea carries the
+/// attribution to clients (MES License.attribution; AB-A-0297).
+public let attribution = "Made with Fibo 2.0 by Bria AI (CC BY-NC 4.0)"
 let fiboLicence: JSONValue = [
-    "spdx": "CC-BY-NC-4.0", "commercial_use": false, "accepted_required": true,
+    "spdx": "CC-BY-NC-4.0", "commercial_use": false, "accepted_required": true, "user_accept_required": true,
     "terms_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+    "attribution": .string(attribution),
     "notice": .string("Fibo 2.0 weights © Bria AI, CC BY-NC 4.0: non-commercial use only, with attribution. Commercial "
         + "use needs a licence from Bria (platform.bria.ai/licensing/pricing?model=fibo-2). The weights are gated: the "
         + "Hugging Face account behind your token needs access to the model's repo (briaai/Fibo-2.0-dev, "
@@ -297,6 +302,12 @@ let fiboLicence: JSONValue = [
 ]
 let limits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid)
 let editLimits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid, maxImages: maxImages)
+/// Fibo 2.0's edit redraws the picture at the size it was trained at for the first image's aspect ratio, which crops
+/// that image to the ratio. So it can't paint a marked region of a picture in place: Gaea brings a fill's result back
+/// to the picture's size and composites it through the mask, and a cropped result lands shifted (GPP-1 §4.3, as Gaea
+/// widened it for this case; AB-A-0297). Gaea reads this and keeps both models off image.fill and image.extend.
+/// image.edit itself is unaffected. Drop it if the package ever returns the whole frame at the size asked.
+let imageToImage = ["image_to_image": true]
 
 /// The MES extensions a model's offers name. Edit Turbo has no guidance.
 func params(_ model: Model) -> JSONValue {
@@ -357,7 +368,7 @@ func offerModel(_ model: Model, edit: Bool) -> JSONValue {
 
 public let fibo2Plugin = GaeaPluginDefinition(
     id: "com.xocialize.gaea.fibo2",
-    version: "0.2.0",
+    version: "0.2.1",
     minGaea: "1.9.0",
     team: "CFZS6RXUCP",
     repo: "https://github.com/xocialize-code/gaea-plugin-fibo2",
@@ -378,7 +389,7 @@ public let fibo2Plugin = GaeaPluginDefinition(
         PluginManifest.Offer(operation: "image.generate", profile: "image", model: offerModel(.dev, edit: false),
                              params: params(.dev), defaults: ["count": 1], limits: limits),
         PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(.dev, edit: true),
-                             params: params(.dev), limits: editLimits),
+                             params: params(.dev), limits: editLimits, supports: imageToImage),
         PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(.editTurbo, edit: true),
-                             params: params(.editTurbo), limits: editLimits),
+                             params: params(.editTurbo), limits: editLimits, supports: imageToImage),
     ])
