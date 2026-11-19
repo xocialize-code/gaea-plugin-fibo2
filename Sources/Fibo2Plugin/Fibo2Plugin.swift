@@ -368,7 +368,7 @@ func offerModel(_ model: Model, edit: Bool) -> JSONValue {
 
 public let fibo2Plugin = GaeaPluginDefinition(
     id: "com.xocialize.gaea.fibo2",
-    version: "0.2.1",
+    version: "0.2.2",
     minGaea: "1.9.0",
     team: "CFZS6RXUCP",
     repo: "https://github.com/xocialize-code/gaea-plugin-fibo2",
