@@ -87,10 +87,23 @@ import Testing
         #expect(params(.dev)["properties"]?["x-fibo2.guidance"] != nil)
     }
 
-    @Test func theManifestOffersTwoNamedOnlyNonCommercialModels() throws {
+    @Test func aMatteCarriesItsKindAndASeedOnlyWhenAsked() throws {
+        let image = Image(format: .png, data: Data([1]))
+        let plain = MatteCall().request(image)
+        #expect(plain.preferredKind == .softAlpha && plain.metaData.isEmpty)
+        #expect(MatteCall().effective == ["x-fibo2.kind": "softAlpha", "seed": 0])
+        let asked = MatteCall(kind: .binary, seed: 9)
+        #expect(asked.request(image).preferredKind == .binary)
+        #expect(asked.request(image).metaData[Fibo2MetaKeys.seed] == .int(9))
+        #expect(asked.effective == ["x-fibo2.kind": "binary", "seed": 9])
+        #expect(configuration(.rmbg, quant: .int8).variant == .rmbg)
+        #expect(Model.rmbg.id == "rmbg-3" && !Model.rmbg.generates)
+    }
+
+    @Test func theManifestOffersThreeNamedOnlyNonCommercialModels() throws {
         let manifest = try fibo2Plugin.manifest()
-        #expect(manifest.version == "0.2.1" && manifest.minGaea == "1.9.0")
-        #expect(manifest.models.map(\.id) == ["fibo-2-dev", "fibo-2-edit-turbo"])
+        #expect(manifest.version == "0.3.0" && manifest.minGaea == "1.9.0")
+        #expect(manifest.models.map(\.id) == ["fibo-2-dev", "fibo-2-edit-turbo", "rmbg-3"])
         for model in manifest.models {
             #expect(model.lanes.map(\.id) == ["bf16", "int8", "int4"] && model.lanes[0].default)
         }
@@ -103,15 +116,21 @@ import Testing
             #expect(lane.resolved.weightSources.map(\.role) == ["transformer", "shared"])
             #expect(lane.resolved.weightSources.allSatisfy { $0.repo == "briaai/Fibo-2.0-edit-turbo" && $0.revision?.count == 40 })
         }
-        #expect(manifest.offers.map(\.operation) == ["image.generate", "image.edit", "image.edit"])
-        #expect(manifest.offers.map { $0.modelID } == ["fibo-2-dev", "fibo-2-dev", "fibo-2-edit-turbo"])
+        // RMBG 3.0: its own transformer, on Edit Turbo's text encoder and VAE.
+        for lane in manifest.models[2].lanes {
+            #expect(lane.resolved.weightSources.map(\.repo) == ["briaai/RMBG-3.0", "briaai/Fibo-2.0-edit-turbo"])
+            #expect(lane.resolved.weightSources.allSatisfy { $0.revision?.count == 40 })
+        }
+        #expect(manifest.offers.map(\.operation) == ["image.generate", "image.edit", "image.edit", "image.matte"])
+        #expect(manifest.offers.map { $0.modelID } == ["fibo-2-dev", "fibo-2-dev", "fibo-2-edit-turbo", "rmbg-3"])
         for offer in manifest.offers {
             let model = offer.model
             #expect(model["license"]?["spdx"] == "CC-BY-NC-4.0" && model["license"]?["commercial_use"] == false)
             #expect(model["license"]?["accepted_required"] == true && model["named_only"] == true)
             // The licence binds each user, and asks for attribution (AB-A-0297).
             #expect(model["license"]?["user_accept_required"] == true)
-            #expect(model["license"]?["attribution"]?.stringValue == "Made with Fibo 2.0 by Bria AI (CC BY-NC 4.0)")
+            #expect(model["license"]?["attribution"]?.stringValue == (offer.modelID == "rmbg-3"
+                ? "Background removed with RMBG 3.0 by Bria AI (CC BY-NC 4.0)" : "Made with Fibo 2.0 by Bria AI (CC BY-NC 4.0)"))
             #expect(model["speed_class"] != nil && model["memory_class"] == "large")
             #expect(model["license"]?["notice"]?.stringValue?.contains("non-commercial") == true)
         }
@@ -120,6 +139,11 @@ import Testing
         // The edit crops to a trained aspect ratio, so Gaea keeps both models off fill and extend (GPP-1 §4.3).
         #expect(manifest.offers[0].supports == nil)
         #expect(manifest.offers[1].supports == ["image_to_image": true] && manifest.offers[2].supports == ["image_to_image": true])
+        // The matte takes a picture of any size and one option.
+        let matte = manifest.offers[3]
+        #expect(matte.supports == nil && matte.limits?.maxImages == 1 && matte.limits?.maxPixels == 8192 * 8192)
+        #expect(matte.params?["properties"]?["x-fibo2.kind"]?["default"] == "softAlpha")
+        #expect(matte.model["license"]?["notice"]?.stringValue?.contains("briaai/RMBG-3.0") == true)
         #expect(manifest.engine?.contract == MLXEngineRelease.contract)
     }
 }

@@ -14,25 +14,27 @@ import MLXToolKit
 //     classifier-free guidance 5, two DiT passes a step.
 //   - fibo-2-edit-turbo (0.2.0): instruction editing only, distilled from Dev to 4 steps without guidance.
 // Both read structured JSON captions (Bria's VGL); a short description or a plain instruction works too.
+//   - rmbg-3 (0.3.0): Bria's RMBG 3.0, Edit Turbo fine-tuned and distilled to render an alpha matte. image.matte
+//     only: one fixed instruction, 4 steps, no prompt and no options but a seed.
 //
 // The weights are non-commercial, so Gaea makes the models named-only and opt-in by itself; the offers say named-only
 // too (AB-D-0226: a plugin may carry such a model, with its terms shown). Three lanes each, one per DiT quant, all made
 // at load from Bria's own gated snapshots; bf16 is the default. Weights come from the models root Gaea sends in
 // configure; the engine materializes a missing snapshot from Bria's repo with a Hugging Face token whose account has
 // access. Nothing is mirrored. The two repos share their text encoder, VAE and fonts byte for byte, so Edit Turbo
-// fetches only its transformer when Dev is installed.
+// fetches only its transformer when Dev is installed. RMBG 3.0's repo holds a transformer only and runs on either's.
 
 /// The package's envelope (`Fibo2Envelope`): about one megapixel, the area the model was trained at.
 public let maxPixels = Fibo2Envelope.maxOutputPixels, minPixels = Fibo2Envelope.minOutputPixels
 public let minSide = Fibo2Envelope.minSide, grid = 16, maxImages = Fibo2Envelope.maxImages
 
-/// The plugin's models: the package's two checkpoints.
+/// The plugin's models: the package's three checkpoints.
 public typealias Model = Fibo2Variant
 
 extension Fibo2Variant {
     /// The MES model id, which is the package's name.
     public var id: String { packageName }
-    /// image.generate is Dev's alone: Edit Turbo is distilled for editing.
+    /// image.generate is Dev's alone: Edit Turbo is distilled for editing, RMBG 3.0 for matting.
     public var generates: Bool { self == .dev }
     /// Dev runs with guidance; Edit Turbo has none, so it takes no guidance and no negative prompt.
     public var guided: Bool { self == .dev }
@@ -279,6 +281,44 @@ func edit(_ model: Model = .dev) -> EngineOperation {
     }
 }
 
+/// What one image.matte carries, built the same way by the worker and fibo2-inproc.
+public struct MatteCall: Sendable {
+    public var kind: Matte.Kind
+    /// The noise seed. 0 is the model card's; another one retries a matte that came out broken.
+    public var seed: UInt64
+
+    public init(kind: Matte.Kind = .softAlpha, seed: UInt64 = Fibo2Matte.defaultSeed) {
+        self.kind = kind
+        self.seed = seed
+    }
+
+    public func request(_ image: Image) -> MattingRequest {
+        MattingRequest(image: image, preferredKind: kind,
+                       metaData: seed == Fibo2Matte.defaultSeed ? [:] : [Fibo2MetaKeys.seed: .int(Int(seed))])
+    }
+
+    public var effective: [String: JSONValue] { ["x-fibo2.kind": .string(kind.rawValue), "seed": .int(Int64(seed))] }
+}
+
+/// MES image.matte with RMBG 3.0: the matte of whatever the model takes for the subject, as a grey PNG `mask` the
+/// picture's size (white = keep). Gaea makes `extract` from it. The model has one instruction and one setting, so
+/// there is nothing to tune: `x-fibo2.kind` `binary` thresholds the matte, and a `seed` other than 0 redraws it.
+func matte() -> EngineOperation {
+    EngineOperation("image.matte", outputNames: ["matte": "mask"]) { job in
+        var call = MatteCall(seed: job.seed ?? Fibo2Matte.defaultSeed)
+        if let kind = job.param("x-fibo2.kind")?.stringValue {
+            guard let k = Matte.Kind(rawValue: kind) else {
+                throw GPPError(.invalidRequest, "x-fibo2.kind is softAlpha or binary.", detail: ["param": "x-fibo2.kind"])
+            }
+            call.kind = k
+        }
+        guard call.seed <= UInt64(Int32.max) else {
+            throw GPPError(.invalidRequest, "seed is at most \(Int32.max).", detail: ["param": "seed"])
+        }
+        return [EngineCall(call.request(try job.image("image")), effective: call.effective)]
+    }
+}
+
 public func lanes(_ model: Model = .dev) -> [LaneDefinition] {
     quants.map { quant in
         LaneDefinition(id: quant.rawValue, default: quant == defaultQuant, configuration: configuration(model, quant: quant))
@@ -300,6 +340,39 @@ let fiboLicence: JSONValue = [
         + "Hugging Face account behind your token needs access to the model's repo (briaai/Fibo-2.0-dev, "
         + "briaai/Fibo-2.0-edit-turbo)."),
 ]
+/// RMBG 3.0 has its own page for commercial terms; the licence and what it asks of each user are Fibo 2.0's.
+public let matteAttribution = "Background removed with RMBG 3.0 by Bria AI (CC BY-NC 4.0)"
+let rmbgLicence: JSONValue = [
+    "spdx": "CC-BY-NC-4.0", "commercial_use": false, "accepted_required": true, "user_accept_required": true,
+    "terms_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+    "attribution": .string(matteAttribution),
+    "notice": .string("RMBG 3.0 weights © Bria AI, CC BY-NC 4.0: non-commercial use only, with attribution. Commercial "
+        + "use needs a licence from Bria (platform.bria.ai/licensing/pricing?model=rmbg-3.0), or Bria's hosted API. The "
+        + "weights are gated: the Hugging Face account behind your token needs access to briaai/RMBG-3.0, and to "
+        + "briaai/Fibo-2.0-edit-turbo or briaai/Fibo-2.0-dev for the text encoder and VAE it runs on."),
+]
+/// The picture goes in at any size: the model sees it at about one megapixel and the matte is resized to it.
+let matteLimits = PluginManifest.Limits(maxPixels: 8192 * 8192, sizeMultiple: 1, maxImages: 1)
+let matteParams: JSONValue = [
+    "type": "object", "additionalProperties": false,
+    "properties": [
+        "x-fibo2.kind": [
+            "type": "string", "enum": ["softAlpha", "binary"], "default": "softAlpha",
+            "description": "softAlpha keeps the grey of hair, fur and motion blur. binary thresholds the matte at half.",
+            "x-mes-ui": ["widget": "picker", "label": "Matte", "advanced": true]],
+    ],
+]
+let matteOfferModel: JSONValue = [
+    "id": .string(Model.rmbg.id), "title": .string(Model.rmbg.title), "license": rmbgLicence,
+    "memory_class": "large", "speed_class": "standard", "quality_tiers": ["best"], "named_only": true,
+    "notes": .string("Research plugin, named-only and opt-in (CC BY-NC 4.0: non-commercial). Bria's RMBG 3.0: background "
+        + "removal as an image edit, by Fibo 2.0 Edit Turbo fine-tuned to render a soft alpha matte in 4 steps. It knows "
+        + "what the subject is: every person of a group, the holes in mesh and spokes, cast shadows left out, product "
+        + "text kept. An 8.1B model, so seconds a picture where BiRefNet takes a fraction of one: for the hard pictures. "
+        + "The matte is rendered at about one megapixel and resized to the picture. Glass, veils and smoke tend to come "
+        + "out opaque. A matte that came out broken (rare) can be redrawn with another seed; 0 is the default."),
+]
+
 let limits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid)
 let editLimits = PluginManifest.Limits(maxPixels: maxPixels, minSide: minSide, sizeMultiple: grid, maxImages: maxImages)
 /// Fibo 2.0's edit redraws the picture at the size it was trained at for the first image's aspect ratio, which crops
@@ -357,6 +430,8 @@ func offerModel(_ model: Model, edit: Bool) -> JSONValue {
     case (.editTurbo, _):
         use = "Distilled from Fibo 2.0 Dev for editing: 4 steps without guidance, one pass a step, so a negative prompt "
             + "does nothing. " + editNote
+    case (.rmbg, _):
+        return matteOfferModel
     }
     return [
         "id": .string(model.id), "title": .string(model.title), "license": fiboLicence,
@@ -368,15 +443,16 @@ func offerModel(_ model: Model, edit: Bool) -> JSONValue {
 
 public let fibo2Plugin = GaeaPluginDefinition(
     id: "com.xocialize.gaea.fibo2",
-    version: "0.2.2",
+    version: "0.3.0",
     minGaea: "1.9.0",
     team: "CFZS6RXUCP",
     repo: "https://github.com/xocialize-code/gaea-plugin-fibo2",
     title: "Fibo 2.0",
     summary: "Bria's Fibo 2.0 (CC BY-NC 4.0: non-commercial; gated weights): an 8.1B DiT on Qwen3-VL-4B that reads "
         + "structured JSON captions. Fibo 2.0 Dev, the full 50-step base model, for text-to-image and instruction "
-        + "editing of up to 5 images; Fibo 2.0 Edit Turbo for the same edits in 4 steps. Strong prompt adherence and "
-        + "text rendering. A research plugin: named-only and opt-in.",
+        + "editing of up to 5 images; Fibo 2.0 Edit Turbo for the same edits in 4 steps; RMBG 3.0, the same model "
+        + "fine-tuned for background removal, for mattes of hard pictures. Strong prompt adherence and text rendering. "
+        + "A research plugin: named-only and opt-in.",
     license: "Apache-2.0",
     executable: "gaea-fibo2-worker",
     models: [
@@ -384,6 +460,8 @@ public let fibo2Plugin = GaeaPluginDefinition(
                 operations: [generate(), edit(.dev)]),
         .engine(Fibo2EditTurboPackage.self, id: Model.editTurbo.id, title: Model.editTurbo.title, lanes: lanes(.editTurbo),
                 operations: [edit(.editTurbo)]),
+        .engine(Fibo2RMBGPackage.self, id: Model.rmbg.id, title: Model.rmbg.title, lanes: lanes(.rmbg),
+                operations: [matte()]),
     ],
     offers: [
         PluginManifest.Offer(operation: "image.generate", profile: "image", model: offerModel(.dev, edit: false),
@@ -392,4 +470,6 @@ public let fibo2Plugin = GaeaPluginDefinition(
                              params: params(.dev), limits: editLimits, supports: imageToImage),
         PluginManifest.Offer(operation: "image.edit", profile: "image", model: offerModel(.editTurbo, edit: true),
                              params: params(.editTurbo), limits: editLimits, supports: imageToImage),
+        PluginManifest.Offer(operation: "image.matte", profile: "image", model: matteOfferModel, params: matteParams,
+                             limits: matteLimits),
     ])

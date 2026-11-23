@@ -5,7 +5,8 @@
 #   1. gaea-plugin-check (GaeaPluginKit's tiny host): static signature check against the team's
 #      Developer ID requirement, launch with Process.launchRequirement, hello against the manifest,
 #      configure → prepare Fibo 2.0 Dev int8 → image.generate (a 512² image, seed 42, 8 steps) → memory.query →
-#      shutdown, against the weights already in the models root (CHECK_MODELS_ROOT);
+#      shutdown, against the weights already in the models root (CHECK_MODELS_ROOT); then, when that root also holds
+#      briaai/RMBG-3.0, an image.matte of the fox fixture with rmbg-3;
 #   2. tools/validate.py --transcript on the session it wrote;
 #   3. a control: the same worker binary outside its bundle must NOT find a metallib.
 #
@@ -63,6 +64,18 @@ grep -q '"media_type":"image/png"' $ROOT/dist/check.log || { print -u2 "the job 
 
 step "validate the session (tools/validate.py --transcript)"
 python3 $SPEC/tools/validate.py --transcript $ROOT/dist/check-session.gpp
+
+# RMBG 3.0, when the models root holds it (its transformer, beside Dev's text encoder and VAE): one image.matte of the
+# fox fixture on the int8 lane. The mask is the picture's size, a grey PNG.
+if [[ -d "$MODELS/models--briaai--RMBG-3.0" ]]; then
+  step "drive image.matte (rmbg-3) over GPP"
+  $TOOLS/gaea-plugin-check $B --operation image.matte --model rmbg-3 --lane int8 --input image=$ROOT/Tests/Fixtures/fox.png \
+    --models-root "$MODELS" --budget ${CHECK_BUDGET:-64000000000} --timeout 600 --session $ROOT/dist/check-matte-session.gpp | tee $ROOT/dist/check-matte.log
+  grep -q '"media_type":"image/png"' $ROOT/dist/check-matte.log || { print -u2 "image.matte returned no PNG"; exit 1 }
+  python3 $SPEC/tools/validate.py --transcript $ROOT/dist/check-matte-session.gpp
+else
+  step "no briaai/RMBG-3.0 under $MODELS: image.matte not driven"
+fi
 
 step "control: the bare worker, outside its bundle, must not find a metallib"
 cache=$TOOLS/cache; mkdir -p $cache

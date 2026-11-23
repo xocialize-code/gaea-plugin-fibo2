@@ -1,5 +1,5 @@
 {
-  "originHash" : "2a2e4c98ffcb27ddf091b482d6e415734644dd494e80c47d9f7234c492b90bfb",
+  "originHash" : "1fde7e46a1044c82f226fa1335b90899508e1bc88a8e07ee02697f014c4ffe61",
   "pins" : [
     {
       "identity" : "designscaffold",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/xocialize/fibo2-swift.git",
       "state" : {
-        "revision" : "d996c6fe338cee5e6096b70bd1461744769ddff8",
-        "version" : "0.2.0"
+        "revision" : "ad9ea3b24ff25b04984aab49d3b751686da0ea24",
+        "version" : "0.3.0"
       }
     },
     {
@@ -123,8 +123,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-huggingface.git",
       "state" : {
-        "revision" : "c30143a4616f3fa994ee3ab3e3464f752845c07c",
-        "version" : "1.0.0"
+        "revision" : "84ced3d4fa31b1bc8c74f420d346f690cb6b0f35",
+        "version" : "1.0.1"
       }
     },
     {
@@ -132,8 +132,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-jinja.git",
       "state" : {
-        "revision" : "66042420a9225c98ea9382d705e2285769dfdbe5",
-        "version" : "3.1.0"
+        "revision" : "3104efda56131c37dda52e9142f02cc2425c02e6",
+        "version" : "3.2.1"
       }
     },
     {

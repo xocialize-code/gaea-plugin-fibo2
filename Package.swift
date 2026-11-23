@@ -1,7 +1,7 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// gaea-plugin-fibo2: Bria's Fibo 2.0 Dev and Edit Turbo (CC BY-NC 4.0 weights) as a Gaea research plugin. One worker executable built
+// gaea-plugin-fibo2: Bria's Fibo 2.0 Dev, Edit Turbo and RMBG 3.0 (CC BY-NC 4.0 weights) as a Gaea research plugin. One worker executable built
 // on GaeaPluginKit over fibo2-swift, packaged as a signed .gaeaplugin by scripts/build-plugin.sh.
 //
 // fibo2-inproc is not part of the plugin: it runs the same package in-process through MLXServeEngine, with the same
@@ -19,7 +19,7 @@ let package = Package(
         kitPath.map { .package(path: $0) }
             ?? .package(url: "https://github.com/xocialize-code/gaea-plugin-kit.git", from: "0.15.0"),
         fibo2Path.map { .package(path: $0) }
-            ?? .package(url: "https://github.com/xocialize/fibo2-swift.git", exact: "0.2.0"),
+            ?? .package(url: "https://github.com/xocialize/fibo2-swift.git", exact: "0.3.0"),
         // mlx-engine-swift 0.82.1, the first on the fleet's mlx-swift 0.33.1 (contract 1.66.0, which only adds imageLocate
         // to the 1.65.0 Gaea 1.9 decodes). Pinned exactly: a later 0.x could add fields to the worker's memory report
         // that GPP v1's closed schema doesn't carry, or a contract Gaea can't decode.
